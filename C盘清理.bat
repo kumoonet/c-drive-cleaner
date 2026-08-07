@@ -1,6 +1,15 @@
 @echo off
 title C盘清理工具
 
+:: ============================================
+:: C盘清理工具 v2.4
+:: 作者: KuMoo | 公众号: 弱者思维体系
+:: 仓库: https://github.com/kumoonet/c-drive-cleaner
+:: ============================================
+echo.
+echo   C盘清理工具 v2.4  ·  公众号: 弱者思维体系  ·  KuMoo
+echo.
+
 :: 1. PATH中的python
 where python >nul 2>&1
 if %errorlevel% equ 0 (
