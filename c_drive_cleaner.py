@@ -33,7 +33,7 @@ VERSION = "2.4"
 
 # 更新日志（内观：版本透明，运行时可见）
 APP_CHANGELOG = [
-    {"ver": "2.4", "date": "2026-08-07", "note": "新增驱动管理（pnputil旧版本识别/删除，按类GUID风险分档：无风险/低风险一键删，在用驱动自动过滤） + AppX管理（预装UWP卸载，黑名单保护） + 清理前自动建还原点 + 主菜单改为循环（q退出）+ 修复pnputil双语输出解析（chcp 65001下英文输出）+ 运行时可见更新日志（[c]查看全部）"},
+    {"ver": "2.4", "date": "2026-08-07", "note": "新增驱动管理（pnputil旧版本识别/删除，按类GUID风险分档：无风险/低风险一键删，在用驱动自动过滤） + AppX管理（预装UWP卸载，黑名单保护） + 清理前自动建还原点 + 主菜单改为循环（q退出）+ 修复pnputil双语输出解析（chcp 65001下英文输出）+ 修复无效快捷方式误判（IShellLink COM替代二进制解析）+ 运行时可见更新日志（[c]查看全部）"},
     {"ver": "2.3", "date": "2026-08-01", "note": "WinApp2整合：新增钉钉日志/Obsidian/Avast日志分类，Chrome/Edge根级增量与Intel着色器并入"},
     {"ver": "2.2", "date": "2026-07-26", "note": "BleachBit整合：浏览器多Profile/base级缓存、AI端侧模型、VSCode/Cursor/Windsurf、Firefox完整路径、Defender隔离区"},
 ]
@@ -1591,23 +1591,67 @@ def scan_dead_shortcuts():
 
 
 def _is_dead_shortcut(lnk_path):
+    """用 IShellLink COM 解析快捷方式目标并判断是否失效
+    替代原二进制黑箱解析（原逻辑把参数/图标路径拼进target导致误判）
+    """
+    target = get_shortcut_target(lnk_path)
+    if not target:
+        return False  # 目标为空（UWP/AUMID快捷方式），无法判断，宁可不删
+    return not os.path.exists(target)
+
+
+# --- IShellLink COM 解析（ctypes，无外部依赖） ---
+class _GUID(ctypes.Structure):
+    _fields_ = [("Data1", ctypes.c_ulong), ("Data2", ctypes.c_ushort),
+                ("Data3", ctypes.c_ushort), ("Data4", ctypes.c_ubyte * 8)]
+
+_CLSID_ShellLink = _GUID(0x00021401, 0x0000, 0x0000, (0xC0, 0, 0, 0, 0, 0, 0, 0x46))
+_IID_IShellLinkW = _GUID(0x000214F9, 0x0000, 0x0000, (0xC0, 0, 0, 0, 0, 0, 0, 0x46))
+_IID_IPersistFile = _GUID(0x0000010B, 0x0000, 0x0000, (0xC0, 0, 0, 0, 0, 0, 0, 0x46))
+
+
+def get_shortcut_target(lnk_path):
+    """用 Windows IShellLinkW COM 解析 .lnk 的目标路径（返回 None=空/失败）"""
+    if sys.platform != "win32":
+        return None
     try:
-        with open(lnk_path, "rb") as f:
-            content = f.read()
-        text = content.decode("utf-16-le", errors="ignore")
-        for drive in ["C:", "D:", "E:", "F:"]:
-            idx = text.find(drive + "\\")
-            if idx >= 0:
-                end = text.find("\x00", idx)
-                if end > idx:
-                    target = text[idx:end].strip()
-                    target = "".join(c for c in target if c.isprintable() or c in "\\.")
-                    if target and not os.path.exists(target):
-                        return True
-                break
-        return False
-    except:
-        return False
+        ole32 = ctypes.windll.ole32
+        ole32.CoInitialize(None)
+        pshell = ctypes.c_void_p()
+        hr = ole32.CoCreateInstance(byref(_CLSID_ShellLink), None, 1,
+                                    byref(_IID_IShellLinkW), byref(pshell))
+        if hr != 0 or not pshell.value:
+            return None
+        try:
+            vtbl = ctypes.cast(pshell, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+            # QueryInterface → IPersistFile
+            ppf = ctypes.c_void_p()
+            qa = ctypes.WINFUNCTYPE(ctypes.HRESULT, ctypes.c_void_p,
+                                    ctypes.POINTER(_GUID), ctypes.POINTER(ctypes.c_void_p))(vtbl[0])
+            hr = qa(pshell, byref(_IID_IPersistFile), byref(ppf))
+            if hr != 0 or not ppf.value:
+                return None
+            # IPersistFile::Load(路径, STGM_READ=0)
+            pvtbl2 = ctypes.cast(ppf, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+            load = ctypes.WINFUNCTYPE(ctypes.HRESULT, ctypes.c_void_p,
+                                      ctypes.c_wchar_p, ctypes.c_ulong)(pvtbl2[5])
+            hr = load(ppf, lnk_path, 0)
+            if hr != 0:
+                return None
+            # IShellLinkW::GetPath(buf, 1024, NULL, SLGP_RAWPATH=4)
+            buf = ctypes.create_unicode_buffer(1024)
+            getpath = ctypes.WINFUNCTYPE(ctypes.HRESULT, ctypes.c_void_p, ctypes.c_wchar_p,
+                                         ctypes.c_int, ctypes.c_void_p, ctypes.c_ulong)(vtbl[3])
+            hr = getpath(pshell, buf, 1024, None, 4)
+            if hr != 0:
+                return None
+            return buf.value or None
+        finally:
+            rel = ctypes.WINFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p)(vtbl[2])
+            if pshell.value:
+                rel(pshell)
+    except Exception:
+        return None
 
 
 # ============================================================
