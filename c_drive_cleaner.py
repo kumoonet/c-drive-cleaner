@@ -33,7 +33,7 @@ VERSION = "2.4"
 
 # 更新日志（内观：版本透明，运行时可见）
 APP_CHANGELOG = [
-    {"ver": "2.4", "date": "2026-08-07", "note": "新增驱动管理（pnputil旧版本识别/删除，按类GUID风险分档：无风险/低风险一键删，在用驱动自动过滤） + AppX管理（预装UWP卸载，黑名单保护） + 清理前自动建还原点 + 主菜单改为循环（q退出）+ 修复pnputil双语输出解析（chcp 65001下英文输出）+ 修复无效快捷方式误判（IShellLink COM替代二进制解析）+ 运行时可见更新日志（[c]查看全部）"},
+    {"ver": "2.4", "date": "2026-08-07", "note": "新增驱动管理（pnputil旧版本识别/删除，按类GUID风险分档：无风险/低风险一键删，在用驱动自动过滤） + AppX管理（预装UWP卸载，黑名单保护） + 清理前自动建还原点 + 主菜单改为循环（q退出）+ 修复pnputil双语输出解析（chcp 65001下英文输出）+ 修复无效快捷方式误判（IShellLink COM替代二进制解析）+ 修复驱动管理无效输入误触删除 + 运行时可见更新日志（[c]查看全部）"},
     {"ver": "2.3", "date": "2026-08-01", "note": "WinApp2整合：新增钉钉日志/Obsidian/Avast日志分类，Chrome/Edge根级增量与Intel着色器并入"},
     {"ver": "2.2", "date": "2026-07-26", "note": "BleachBit整合：浏览器多Profile/base级缓存、AI端侧模型、VSCode/Cursor/Windsurf、Firefox完整路径、Defender隔离区"},
 ]
@@ -1839,12 +1839,22 @@ def driver_manager():
 
     print(f"\n  {C.WHITE}[a]{C.RESET} 全部删除（无风险{len(no_risk)} + 低风险{len(low_risk)}，删除前自动建还原点）")
     print(f"  {C.WHITE}[1]{C.RESET} 仅无风险删除 {len(no_risk)} 个（放心删，重装容易）")
+    print(f"  {C.WHITE}[2]{C.RESET} 仅低风险删除 {len(low_risk)} 个（核心硬件旧版本，删后失去回滚选项）")
     print(f"  {C.WHITE}[v]{C.RESET} 逐项查看后手动选择")
     print(f"  {C.WHITE}[q]{C.RESET} 取消")
     choice = input("  > ").strip().lower()
 
     if choice == "q":
         return
+    elif choice == "a":
+        # 全部删除（无风险 + 低风险）
+        to_delete = no_risk + low_risk
+    elif choice == "1":
+        # 仅无风险档
+        to_delete = no_risk
+    elif choice == "2":
+        # 仅低风险档
+        to_delete = low_risk
     elif choice == "v":
         # 高级: 逐项列出编号，手动选择（同样排除在用驱动）
         flat = []
@@ -1875,12 +1885,10 @@ def driver_manager():
         to_delete = [flat[i - 1] for i in sel if 1 <= i <= len(flat)]
         if not to_delete:
             return
-    elif choice == "1":
-        # 仅无风险档
-        to_delete = no_risk
     else:
-        # 默认: 全部删除旧版本
-        to_delete = no_risk + low_risk
+        # 无效输入: 绝不允许落到"默认删除"（破坏性操作的兜底分支必须是取消）
+        print(f"  {C.AMBER}输入无效: 请选择 a=全部删除 / 1=仅无风险 / v=逐项选择 / q=取消{C.RESET}")
+        return
 
     print(f"\n  即将删除 {len(to_delete)} 个旧版本驱动包:")
     for d in to_delete:
