@@ -29,11 +29,12 @@ import collections
 from pathlib import Path
 from datetime import datetime, timedelta
 
-VERSION = "2.4"
+VERSION = "2.5"
 
 # 更新日志（内观：版本透明，运行时可见）
 APP_CHANGELOG = [
-    {"ver": "2.4", "date": "2026-08-07", "note": "新增驱动管理（pnputil旧版本识别/删除，按类GUID风险分档：无风险/低风险一键删，在用驱动自动过滤） + AppX管理（预装UWP卸载，黑名单保护） + 清理前自动建还原点 + 主菜单改为循环（q退出）+ 修复pnputil双语输出解析（chcp 65001下英文输出）+ 修复无效快捷方式误判（IShellLink COM替代二进制解析）+ 修复驱动管理无效输入误触删除 + 运行时可见更新日志（[c]查看全部）"},
+    {"ver": "2.5", "date": "2026-08-08", "note": "浏览器缓存拆分细粒度：原「浏览器缓存（基础）」「浏览器深度清理」拆为8个独立分类（网页/渲染/组件崩溃/根级数据/站点数据/ServiceWorker配额/Firefox缓存/Firefox深度），各自标注风险（安全/注意），可按需单独勾选清理，避免误清登录态；id 4-11 为浏览器细分类，原 6-30 顺延为 12-36；扫描分类数改为动态计算"},
+    {"ver": "2.4", "date": "2026-08-07", "note": "新增驱动管理（pnputil旧版本识别/删除，按类GUID风险分档：无风险/低风险一键删，在用驱动自动过滤） + AppX管理（预装UWP卸载，黑名单保护） + 清理前自动建还原点 + 主菜单改为循环（q退出）+ 修复pnputil双语输出解析（chcp 65001下英文输出）+ 修复无效快捷方式误判（IShellLink COM替代二进制解析）+ 修复驱动管理无效输入误触删除 + 驱动管理[2]仅低风险独立选项 + 运行时可见更新日志（[c]查看全部）"},
     {"ver": "2.3", "date": "2026-08-01", "note": "WinApp2整合：新增钉钉日志/Obsidian/Avast日志分类，Chrome/Edge根级增量与Intel着色器并入"},
     {"ver": "2.2", "date": "2026-07-26", "note": "BleachBit整合：浏览器多Profile/base级缓存、AI端侧模型、VSCode/Cursor/Windsurf、Firefox完整路径、Defender隔离区"},
 ]
@@ -249,26 +250,73 @@ def build_categories():
         },
         {
             "id": 4,
-            "name": "浏览器缓存（基础）",
-            "desc": "Edge/Chrome/Quark/Firefox网页+GPU+渲染缓存（多Profile）",
+            "name": "浏览器-网页缓存",
+            "desc": "Edge/Chrome/Quark 网页内容缓存（Cache/Code Cache/Media Cache/Sessions，多Profile）",
             "risk": "安全",
-            "paths": (lambda: [
-                # === Base级缓存（BleachBit: $$base$$/ 下，不属于任何Profile）===
-                # Edge
-                os.path.join(local, "Microsoft", "Edge", "User Data", "component_crx_cache"),
-                os.path.join(local, "Microsoft", "Edge", "User Data", "extensions_crx_cache"),
+            "paths": [
+                os.path.join(p, sub)
+                for base in [
+                    os.path.join(local, "Microsoft", "Edge", "User Data"),
+                    os.path.join(local, "Google", "Chrome", "User Data"),
+                    os.path.join(local, "Quark", "User Data"),
+                ]
+                for p in get_browser_profiles(base)
+                for sub in ["Cache", "Code Cache", "Media Cache",
+                            "Application Cache", "Sessions"]
+            ],
+        },
+        {
+            "id": 5,
+            "name": "浏览器-渲染缓存",
+            "desc": "Edge/Chrome/Quark GPU与渲染缓存（GPUCache/ShaderCache/GraphiteDawn）",
+            "risk": "安全",
+            "paths": [
+                # 根级渲染缓存
                 os.path.join(local, "Microsoft", "Edge", "User Data", "GraphiteDawnCache"),
                 os.path.join(local, "Microsoft", "Edge", "User Data", "ShaderCache"),
                 os.path.join(local, "Microsoft", "Edge", "User Data", "GrShaderCache"),
+                os.path.join(local, "Google", "Chrome", "User Data", "GraphiteDawnCache"),
+                os.path.join(local, "Google", "Chrome", "User Data", "ShaderCache"),
+                os.path.join(local, "Google", "Chrome", "User Data", "GrShaderCache"),
+                os.path.join(local, "Quark", "User Data", "GraphiteDawnCache"),
+                os.path.join(local, "Quark", "User Data", "ShaderCache"),
+                os.path.join(local, "Quark", "User Data", "GrShaderCache"),
+                # Per-Profile GPU 缓存
+            ] + [
+                os.path.join(p, "GPUCache")
+                for base in [
+                    os.path.join(local, "Microsoft", "Edge", "User Data"),
+                    os.path.join(local, "Google", "Chrome", "User Data"),
+                    os.path.join(local, "Quark", "User Data"),
+                ]
+                for p in get_browser_profiles(base)
+            ],
+        },
+        {
+            "id": 6,
+            "name": "浏览器-组件与崩溃",
+            "desc": "Edge/Chrome/Quark 组件/扩展缓存 + 崩溃报告（自动重建）",
+            "risk": "安全",
+            "paths": [
+                # Edge
+                os.path.join(local, "Microsoft", "Edge", "User Data", "component_crx_cache"),
+                os.path.join(local, "Microsoft", "Edge", "User Data", "extensions_crx_cache"),
                 os.path.join(local, "Microsoft", "Edge", "User Data", "Crash Reports"),
                 # Chrome
                 os.path.join(local, "Google", "Chrome", "User Data", "component_crx_cache"),
                 os.path.join(local, "Google", "Chrome", "User Data", "extensions_crx_cache"),
-                os.path.join(local, "Google", "Chrome", "User Data", "GraphiteDawnCache"),
-                os.path.join(local, "Google", "Chrome", "User Data", "ShaderCache"),
-                os.path.join(local, "Google", "Chrome", "User Data", "GrShaderCache"),
                 os.path.join(local, "Google", "Chrome", "User Data", "Crash Reports"),
-                # === Chrome/Edge 根级增量（WinApp2: 实测可重建，非登录态）===
+                # Quark
+                os.path.join(local, "Quark", "User Data", "component_crx_cache"),
+                os.path.join(local, "Quark", "User Data", "extensions_crx_cache"),
+            ],
+        },
+        {
+            "id": 7,
+            "name": "浏览器-根级数据",
+            "desc": "Chrome/Edge 根级增量（语音模型/DRM/安全浏览，删除后自动重建）",
+            "risk": "安全",
+            "paths": [
                 # WasmTtsEngine 语音合成模型（WinApp2实测21.9MB，删除后自动重下）
                 os.path.join(local, "Google", "Chrome", "User Data", "WasmTtsEngine"),
                 # MediaFoundationWidevineCdm DRM解密缓存（删除后重新初始化）
@@ -283,31 +331,12 @@ def build_categories():
                 os.path.join(local, "Microsoft", "Edge", "User Data", "Safe Browsing"),
                 os.path.join(local, "Microsoft", "Edge", "User Data", "hyphen-data"),
                 os.path.join(local, "Microsoft", "Edge", "User Data", "ZxcvbnData"),
-                # Quark
-                os.path.join(local, "Quark", "User Data", "component_crx_cache"),
-                os.path.join(local, "Quark", "User Data", "extensions_crx_cache"),
-                os.path.join(local, "Quark", "User Data", "GraphiteDawnCache"),
-                os.path.join(local, "Quark", "User Data", "ShaderCache"),
-                os.path.join(local, "Quark", "User Data", "GrShaderCache"),
-                # === Per-Profile缓存（动态发现所有Profile）===
-            ] + [
-                os.path.join(p, sub)
-                for base in [
-                    os.path.join(local, "Microsoft", "Edge", "User Data"),
-                    os.path.join(local, "Google", "Chrome", "User Data"),
-                    os.path.join(local, "Quark", "User Data"),
-                ]
-                for p in get_browser_profiles(base)
-                for sub in ["Cache", "Code Cache", "GPUCache", "Media Cache",
-                            "Application Cache", "Sessions"]
-            ])(),
-            "firefox_cache": True,
-            "firefox_profiles": os.path.join(local, "Mozilla", "Firefox", "Profiles"),
+            ],
         },
         {
-            "id": 5,
-            "name": "浏览器深度清理",
-            "desc": "Session/LocalStorage/IndexedDB/ServiceWorker/SiteData（需关闭浏览器，多Profile）",
+            "id": 8,
+            "name": "浏览器-站点数据",
+            "desc": "Session/LocalStorage/IndexedDB/SiteData（清空后网站需重新登录）",
             "risk": "注意",
             "paths": [
                 os.path.join(p, sub)
@@ -319,11 +348,26 @@ def build_categories():
                 for p in get_browser_profiles(base)
                 for sub in [
                     "Session Storage", "Local Storage", "IndexedDB",
-                    "Service Worker", "File System", "WebStorage",
+                    "File System", "WebStorage",
                     "Extension State", "databases",
                 ]
+            ],
+        },
+        {
+            "id": 9,
+            "name": "浏览器-ServiceWorker与配额",
+            "desc": "Service Worker + QuotaManager 配额文件（离线功能重置）",
+            "risk": "注意",
+            "paths": [
+                os.path.join(p, sub)
+                for base in [
+                    os.path.join(local, "Microsoft", "Edge", "User Data"),
+                    os.path.join(local, "Google", "Chrome", "User Data"),
+                    os.path.join(local, "Quark", "User Data"),
+                ]
+                for p in get_browser_profiles(base)
+                for sub in ["Service Worker"]
             ] + [
-                # QuotaManager文件（BleachBit: site_data选项）
                 os.path.join(p, "QuotaManager")
                 for base in [
                     os.path.join(local, "Microsoft", "Edge", "User Data"),
@@ -331,8 +375,23 @@ def build_categories():
                     os.path.join(local, "Quark", "User Data"),
                 ]
                 for p in get_browser_profiles(base)
-            ] + (lambda: [
-                # === Firefox深度清理（对照BleachBit firefox.xml）===
+            ],
+        },
+        {
+            "id": 10,
+            "name": "浏览器-Firefox缓存",
+            "desc": "Firefox 网页/GPU缓存（多Profile）",
+            "risk": "安全",
+            "paths": [],
+            "firefox_cache": True,
+            "firefox_profiles": os.path.join(local, "Mozilla", "Firefox", "Profiles"),
+        },
+        {
+            "id": 11,
+            "name": "浏览器-Firefox深度",
+            "desc": "Firefox 崩溃报告/会话备份/站点数据",
+            "risk": "注意",
+            "paths": [
                 # crash_reports选项
                 os.path.join(roaming, "Mozilla", "Firefox", "Crash Reports"),
             ] + [
@@ -342,10 +401,10 @@ def build_categories():
                 if os.path.isdir(fp)
                 for sub in ["minidumps", "sessionstore-backups",
                             os.path.join("storage", "default")]
-            ])(),
+            ],
         },
         {
-            "id": 6,
+            "id": 12,
             "name": "缩略图与图标缓存",
             "desc": "资源管理器缩略图（会短暂重启Explorer）",
             "risk": "安全",
@@ -354,7 +413,7 @@ def build_categories():
             "special_clean": "thumbnails",
         },
         {
-            "id": 7,
+            "id": 13,
             "name": "DirectX/GPU缓存",
             "desc": "GPU着色器缓存",
             "risk": "安全",
@@ -371,7 +430,7 @@ def build_categories():
             ],
         },
         {
-            "id": 8,
+            "id": 14,
             "name": "Python/pip缓存",
             "desc": "pip下载缓存",
             "risk": "安全",
@@ -381,7 +440,7 @@ def build_categories():
             ],
         },
         {
-            "id": 9,
+            "id": 15,
             "name": "npm/Node缓存",
             "desc": "npm/yarn/pnpm缓存",
             "risk": "安全",
@@ -394,7 +453,7 @@ def build_categories():
             ],
         },
         {
-            "id": 10,
+            "id": 16,
             "name": "uv/conda缓存",
             "desc": "uv/conda包管理器缓存",
             "risk": "安全",
@@ -405,7 +464,7 @@ def build_categories():
             ],
         },
         {
-            "id": 11,
+            "id": 17,
             "name": "崩溃转储与错误报告",
             "desc": "蓝屏dump和应用崩溃报告",
             "risk": "安全",
@@ -418,7 +477,7 @@ def build_categories():
             "extra_files": [r"C:\Windows\MEMORY.DMP"],
         },
         {
-            "id": 12,
+            "id": 18,
             "name": "Windows日志（旧）",
             "desc": "超过30天的系统日志",
             "risk": "安全",
@@ -430,7 +489,7 @@ def build_categories():
             "older_than_days": 30,
         },
         {
-            "id": 13,
+            "id": 19,
             "name": "回收站",
             "desc": "清空回收站",
             "risk": "注意",
@@ -438,14 +497,14 @@ def build_categories():
             "special": "recycle_bin",
         },
         {
-            "id": 14,
+            "id": 20,
             "name": "Windows.old",
             "desc": "旧系统备份，清除后无法回退",
             "risk": "谨慎",
             "paths": [r"C:\Windows.old"],
         },
         {
-            "id": 15,
+            "id": 21,
             "name": "Electron应用缓存",
             "desc": "VSCode(+Cursor/Windsurf)/Chatbox/Discord/Slack/Zoom等",
             "risk": "安全",
@@ -503,7 +562,7 @@ def build_categories():
             ],
         },
         {
-            "id": 16,
+            "id": 22,
             "name": ".NET/NuGet缓存",
             "desc": ".NET编译缓存和NuGet包",
             "risk": "安全",
@@ -513,7 +572,7 @@ def build_categories():
             ],
         },
         {
-            "id": 17,
+            "id": 23,
             "name": "字体缓存",
             "desc": "Windows字体缓存，自动重建",
             "risk": "安全",
@@ -523,14 +582,14 @@ def build_categories():
             ],
         },
         {
-            "id": 18,
+            "id": 24,
             "name": "Installer临时",
             "desc": "$PatchCache$等安装临时文件",
             "risk": "安全",
             "paths": [r"C:\Windows\Installer\$PatchCache$"],
         },
         {
-            "id": 19,
+            "id": 25,
             "name": "Windows Defender",
             "desc": "扫描历史/隔离区/定义备份/日志（对照BleachBit windows_defender.xml）",
             "risk": "安全",
@@ -554,7 +613,7 @@ def build_categories():
             ],
         },
         {
-            "id": 20,
+            "id": 26,
             "name": "Windows Media Player",
             "desc": "WMP媒体缓存/转码缓存（对照BleachBit windows_media_player.xml）",
             "risk": "安全",
@@ -571,7 +630,7 @@ def build_categories():
             ],
         },
         {
-            "id": 21,
+            "id": 27,
             "name": "WinRAR临时文件",
             "desc": "WinRAR安装目录和VirtualStore下的.tmp（对照BleachBit winrar.xml）",
             "risk": "安全",
@@ -587,7 +646,7 @@ def build_categories():
             ],
         },
         {
-            "id": 22,
+            "id": 28,
             "name": "系统还原点（旧）",
             "desc": "删除最旧还原点，保留最近的",
             "risk": "注意",
@@ -595,7 +654,7 @@ def build_categories():
             "special": "restore_points",
         },
         {
-            "id": 23,
+            "id": 29,
             "name": "浏览器AI模型",
             "desc": "Chrome/Edge端侧AI模型（可达数百MB，对照BleachBit google_chrome.xml ai选项）",
             "risk": "安全",
@@ -619,7 +678,7 @@ def build_categories():
             ],
         },
         {
-            "id": 24,
+            "id": 30,
             "name": "Microsoft Office",
             "desc": "Office调试日志+最近使用记录（对照BleachBit microsoft_office.xml）",
             "risk": "安全",
@@ -631,7 +690,7 @@ def build_categories():
             ],
         },
         {
-            "id": 25,
+            "id": 31,
             "name": "QoderWork/Qoder",
             "desc": "QoderWork CN缓存/日志/临时+CLI日志（实测路径，不动数据库和配置）",
             "risk": "安全",
@@ -663,7 +722,7 @@ def build_categories():
             ],
         },
         {
-            "id": 26,
+            "id": 32,
             "name": "WorkBuddy",
             "desc": "WorkBuddy缓存/WebStorage/日志/扩展日志（实测507MB WebStorage+226MB CachedData）",
             "risk": "安全",
@@ -693,7 +752,7 @@ def build_categories():
             ],
         },
         {
-            "id": 27,
+            "id": 33,
             "name": "更新器安装包",
             "desc": "QoderWork/WorkBuddy/Chatbox更新后残留的旧安装包（合计~760MB）",
             "risk": "注意",
@@ -704,7 +763,7 @@ def build_categories():
             ],
         },
         {
-            "id": 28,
+            "id": 34,
             "name": "钉钉日志",
             "desc": "钉钉更新器日志/运行日志（WinApp2国产零覆盖，自研实测updaterlogs+log+holmeslogs）",
             "risk": "安全",
@@ -716,7 +775,7 @@ def build_categories():
             ],
         },
         {
-            "id": 29,
+            "id": 35,
             "name": "Obsidian",
             "desc": "Obsidian更新器残留+Electron缓存（WinApp2 Dynalist规则实测更新器282MB）",
             "risk": "注意",
@@ -732,7 +791,7 @@ def build_categories():
             ],
         },
         {
-            "id": 30,
+            "id": 36,
             "name": "Avast日志",
             "desc": "Avast Cleanup/Icarus日志（WinApp2实测14MB，杀软日志安全清理）",
             "risk": "安全",
@@ -2163,7 +2222,7 @@ def run_cleanup():
     categories = build_categories()
 
     print()
-    print(f"  {C.DIM}正在扫描 27 个分类...{C.RESET}")
+    print(f"  {C.DIM}正在扫描 {len(categories)} 个分类...{C.RESET}")
     print()
 
     results = []
