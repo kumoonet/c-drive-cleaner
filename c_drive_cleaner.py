@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-C盘清理工具 v2.4
+C盘清理工具 v2.6
 学习BleachBit CleanerML体系（12个XML源码验证）+ WinApp2规则库（4067条CCleaner规则）+ Dism++（pnputil/AppX命令体系）：
   - 浏览器多Profile支持（Default + Profile *）
   - Chrome/Edge AI端侧模型清理 + 根级增量（WasmTtsEngine/DRM/SafeBrowsing）
@@ -20,6 +20,7 @@ C盘清理工具 v2.4
 import os
 import sys
 import re
+import json
 import shutil
 import ctypes
 import time
@@ -29,10 +30,11 @@ import collections
 from pathlib import Path
 from datetime import datetime, timedelta
 
-VERSION = "2.5"
+VERSION = "2.6"
 
 # 更新日志（内观：版本透明，运行时可见）
 APP_CHANGELOG = [
+    {"ver": "2.6", "date": "2026-08-08", "note": "驱动管理新增孤立驱动包检测并分安全等级：B区 [3]安全孤立包（外设/串口/打印机残留，放心删）+ [4]注意孤立包（Intel/联想/Realtek 等核心硬件，可能未来回插需重装），删除后 Windows Update 可重新获取；排除打印机类驱动（软设备由打印服务引用，不在PnP设备树，删除必失败）+ 删除失败区分在用保护与软设备引用 + 清理后显示本次/累计清理量（持久化统计，%LOCALAPPDATA%/CDriveCleaner/cleanup_stats.json）"},
     {"ver": "2.5", "date": "2026-08-08", "note": "浏览器缓存拆分细粒度：原「浏览器缓存（基础）」「浏览器深度清理」拆为8个独立分类（网页/渲染/组件崩溃/根级数据/站点数据/ServiceWorker配额/Firefox缓存/Firefox深度），各自标注风险（安全/注意），可按需单独勾选清理，避免误清登录态；id 4-11 为浏览器细分类，原 6-30 顺延为 12-36；扫描分类数改为动态计算"},
     {"ver": "2.4", "date": "2026-08-07", "note": "新增驱动管理（pnputil旧版本识别/删除，按类GUID风险分档：无风险/低风险一键删，在用驱动自动过滤） + AppX管理（预装UWP卸载，黑名单保护） + 清理前自动建还原点 + 主菜单改为循环（q退出）+ 修复pnputil双语输出解析（chcp 65001下英文输出）+ 修复无效快捷方式误判（IShellLink COM替代二进制解析）+ 修复驱动管理无效输入误触删除 + 驱动管理[2]仅低风险独立选项 + 运行时可见更新日志（[c]查看全部）"},
     {"ver": "2.3", "date": "2026-08-01", "note": "WinApp2整合：新增钉钉日志/Obsidian/Avast日志分类，Chrome/Edge根级增量与Intel着色器并入"},
@@ -168,16 +170,57 @@ def log_skip(filepath, category=""):
         pass
 
 
+def _stats_file_path():
+    """累计清理统计文件路径（%LOCALAPPDATA%/CDriveCleaner/cleanup_stats.json）"""
+    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    d = os.path.join(base, "CDriveCleaner")
+    try:
+        os.makedirs(d, exist_ok=True)
+    except OSError:
+        d = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(d, "cleanup_stats.json")
+
+
+def _load_stats():
+    try:
+        with open(_stats_file_path(), "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {"total_freed": 0, "total_runs": 0, "last_freed": 0,
+                "first_run": None, "last_run": None}
+
+
 def log_summary(total_freed, total_skipped):
-    """写入清理汇总"""
+    """写入清理汇总 + 累计统计（本次清理 X · 累计清理 Y）"""
     global _LOG_FILE
+    stats = _load_stats()
+    stats["total_freed"] = stats.get("total_freed", 0) + total_freed
+    stats["total_runs"] = stats.get("total_runs", 0) + 1
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if not stats.get("first_run"):
+        stats["first_run"] = now
+    stats["last_run"] = now
+    stats["last_freed"] = total_freed
+    try:
+        with open(_stats_file_path(), "w", encoding="utf-8") as f:
+            json.dump(stats, f, ensure_ascii=False, indent=1)
+    except OSError:
+        pass
+
+    # 打印本次 + 累计（内观：每次清理都看到累计战果）
+    print(f"\n  {C.BOLD}本次清理:{C.RESET} {C.GREEN}{format_size(total_freed)}{C.RESET}"
+          + (f"  {C.DIM}| 跳过 {total_skipped}{C.RESET}" if total_skipped else ""))
+    print(f"  {C.DIM}累计清理:{C.RESET} {C.GREEN}{format_size(stats['total_freed'])}{C.RESET}"
+          f"  {C.DIM}（共 {stats['total_runs']} 次，起始 {str(stats.get('first_run', '?'))[:10]}）{C.RESET}")
+
     if not _LOG_FILE:
         return
     try:
         with open(_LOG_FILE, "a", encoding="utf-8") as f:
             f.write("\n" + "=" * 70 + "\n")
             f.write(f"汇总: 释放 {format_size(total_freed)} | 跳过 {total_skipped} 个\n")
-            f.write(f"完成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"累计: {format_size(stats['total_freed'])}（共 {stats['total_runs']} 次）\n")
+            f.write(f"完成时间: {now}\n")
     except:
         pass
 
@@ -1819,6 +1862,12 @@ _CORE_CLASS_GUID_PREFIXES = (
     "{6bdd1fc6",  # 影像
 )
 
+# 排除类 GUID 前缀：这些类的驱动由软设备/服务引用（如打印队列由 spooler 引用），
+# 不显示在 PnP 设备树 → "在用集合"判定会漏 → 删除必然失败，一律不推荐删除
+_EXCLUDE_CLASS_GUID_PREFIXES = (
+    "{4d36e979",  # 打印机（打印队列为软设备，spooler 引用）
+)
+
 
 def _driver_risk_group(d):
     """按类 GUID 分风险档: '低风险'(核心硬件) / '无风险'(非核心)"""
@@ -1826,6 +1875,12 @@ def _driver_risk_group(d):
     if any(guid.startswith(p) for p in _CORE_CLASS_GUID_PREFIXES):
         return "低风险"
     return "无风险"
+
+
+def _can_delete_driver(d):
+    """是否适合作为删除候选（排除打印等软设备类——删除必失败）"""
+    guid = (d.get("类 GUID") or "").lower()
+    return not any(guid.startswith(p) for p in _EXCLUDE_CLASS_GUID_PREFIXES)
 
 
 def driver_manager():
@@ -1877,11 +1932,27 @@ def driver_manager():
     usable = lambda ds: [d for d in ds if d.get("发布名称", "").lower() not in in_use]
 
     # 按风险档分组: 无风险(非核心硬件) / 低风险(核心硬件旧版本)
-    no_risk = usable([d for _, _, olds in groups for d in olds if _driver_risk_group(d) == "无风险"])
-    low_risk = usable([d for _, _, olds in groups for d in olds if _driver_risk_group(d) == "低风险"])
+    no_risk = usable([d for _, _, olds in groups for d in olds
+                      if _can_delete_driver(d) and _driver_risk_group(d) == "无风险"])
+    low_risk = usable([d for _, _, olds in groups for d in olds
+                       if _can_delete_driver(d) and _driver_risk_group(d) == "低风险"])
+    multi_old = no_risk + low_risk  # 可删多版本旧版
 
-    if not no_risk and not low_risk:
-        print(f"  {C.AMBER}没有可安全删除的旧版本驱动（所有候选均在用）。{C.RESET}")
+    # 孤立驱动包（v2.6）: 无任何设备引用、且不在多版本可删候选中的包
+    # = 单版本残留 + 未使用的最新版（删除后 Windows Update 可重新获取）
+    multi_old_pubs = {d.get("发布名称", "").lower() for d in multi_old}
+    orphan = [d for d in drivers
+              if _can_delete_driver(d)
+              and d.get("发布名称", "").lower() not in in_use
+              and d.get("发布名称", "").lower() not in multi_old_pubs]
+    # 孤立包分安全等级（复用类GUID判断）:
+    #   [安全] 非核心硬件（外设/串口/打印机/软件组件）— 重装容易，放心删
+    #   [注意] 核心硬件（Intel/联想/Realtek 等系统/网络/显示/蓝牙/音频）— 可能对应近期拔掉的设备，未来回插需重装
+    orphan_safe = [d for d in orphan if _driver_risk_group(d) == "无风险"]
+    orphan_note = [d for d in orphan if _driver_risk_group(d) == "低风险"]
+
+    if not multi_old and not orphan:
+        print(f"  {C.AMBER}没有可安全删除的驱动（所有候选均在用）。{C.RESET}")
         input("  按回车返回...")
         return
 
@@ -1889,16 +1960,34 @@ def driver_manager():
     print(f"  {C.AMBER}低风险档{C.RESET}: {C.BOLD}{len(low_risk)}{C.RESET} 个（显卡/网卡/声卡/芯片组等核心硬件，删后失去回滚选项）")
     print(f"  {C.DIM}每组自动保留最新版本；正在使用的驱动系统会拒绝删除（自动跳过）{C.RESET}")
     print(f"  {'─' * 58}")
-    print(f"  预览（前8组）:")
-    for name, keep, olds in groups[:8]:
+    print(f"  {C.BOLD}【A区 · 同款多版本旧版】{C.RESET} {C.AMBER}{len(multi_old)}{C.RESET} 个可删：")
+    for name, keep, olds in groups[:6]:
+        olds_u = usable(olds)
+        if not olds_u:
+            continue
         tag = "低风险" if _driver_risk_group(keep) == "低风险" else "无风险"
-        print(f"    [{tag}] {name:<32} 保留 {keep.get('发布名称'):<12} 待删 {len(olds)} 个")
-    if len(groups) > 8:
+        print(f"    [{tag}] {name:<32} 保留 {keep.get('发布名称'):<12} 待删 {len(olds_u)} 个")
+    if len(groups) > 6:
         print(f"    ... 等共 {len(groups)} 组")
 
-    print(f"\n  {C.WHITE}[a]{C.RESET} 全部删除（无风险{len(no_risk)} + 低风险{len(low_risk)}，删除前自动建还原点）")
-    print(f"  {C.WHITE}[1]{C.RESET} 仅无风险删除 {len(no_risk)} 个（放心删，重装容易）")
-    print(f"  {C.WHITE}[2]{C.RESET} 仅低风险删除 {len(low_risk)} 个（核心硬件旧版本，删后失去回滚选项）")
+    if orphan:
+        print(f"  {'─' * 58}")
+        print(f"  {C.BOLD}【B区 · 孤立驱动包】{C.RESET} {C.AMBER}{len(orphan)}{C.RESET} 个"
+              f"（无任何设备引用，删除后 Windows Update 可重新获取）：")
+        print(f"    {C.GREEN}[安全]{C.RESET} {len(orphan_safe)} 个（外设/串口/打印机等非核心，重装容易）")
+        print(f"    {C.AMBER}[注意]{C.RESET} {len(orphan_note)} 个（Intel/联想/Realtek 等核心硬件，可能未来回插）")
+        for d in orphan_safe[:6]:
+            print(f"      [安全] {d.get('发布名称','?'):<12} {d.get('原始名称','?'):<34} {d.get('提供程序名称','?')[:16]}")
+        for d in orphan_note[:6]:
+            print(f"      [注意] {d.get('发布名称','?'):<12} {d.get('原始名称','?'):<34} {d.get('提供程序名称','?')[:16]}")
+        if len(orphan) > 12:
+            print(f"      ... 共 {len(orphan)} 个")
+
+    print(f"\n  {C.WHITE}[a]{C.RESET} 全部删除（A区{len(multi_old)} + B区{len(orphan)}，删除前自动建还原点）")
+    print(f"  {C.WHITE}[1]{C.RESET} 仅A区-无风险删除 {len(no_risk)} 个（放心删，重装容易）")
+    print(f"  {C.WHITE}[2]{C.RESET} 仅A区-低风险删除 {len(low_risk)} 个（核心硬件旧版，删后失去回滚选项）")
+    print(f"  {C.WHITE}[3]{C.RESET} 仅B区-安全孤立包删除 {len(orphan_safe)} 个（外设残留，放心删）")
+    print(f"  {C.WHITE}[4]{C.RESET} 仅B区-注意孤立包删除 {len(orphan_note)} 个（核心硬件，可能未来回插）")
     print(f"  {C.WHITE}[v]{C.RESET} 逐项查看后手动选择")
     print(f"  {C.WHITE}[q]{C.RESET} 取消")
     choice = input("  > ").strip().lower()
@@ -1906,27 +1995,40 @@ def driver_manager():
     if choice == "q":
         return
     elif choice == "a":
-        # 全部删除（无风险 + 低风险）
-        to_delete = no_risk + low_risk
+        # 全部删除（A区 + B区）
+        to_delete = multi_old + orphan_safe + orphan_note
     elif choice == "1":
-        # 仅无风险档
         to_delete = no_risk
     elif choice == "2":
-        # 仅低风险档
         to_delete = low_risk
+    elif choice == "3":
+        to_delete = orphan_safe
+    elif choice == "4":
+        to_delete = orphan_note
     elif choice == "v":
-        # 高级: 逐项列出编号，手动选择（同样排除在用驱动）
+        # 高级: 逐项列出编号，手动选择（A区 + B区）
         flat = []
         idx = 1
         print()
+        print(f"  {C.BOLD}【A区 · 同款多版本旧版】{C.RESET}")
         for name, keep, olds in groups:
-            olds_u = usable(olds)
+            olds_u = [d for d in usable(olds) if _can_delete_driver(d)]
             if not olds_u:
                 continue
             print(f"  {name}（保留 {keep.get('发布名称')}）:")
             for d in olds_u:
                 tag = "低风险" if _driver_risk_group(d) == "低风险" else "无风险"
                 print(f"    {idx:<4} [{tag}] {d.get('发布名称','?'):<12} {d.get('驱动程序版本','?')}")
+                flat.append(d)
+                idx += 1
+        if orphan_safe or orphan_note:
+            print(f"\n  {C.BOLD}【B区 · 孤立驱动包】{C.RESET}")
+            for d in orphan_safe:
+                print(f"    {idx:<4} [安全] {d.get('发布名称','?'):<12} {d.get('原始名称','?'):<32} {d.get('驱动程序版本','?')}")
+                flat.append(d)
+                idx += 1
+            for d in orphan_note:
+                print(f"    {idx:<4} [注意] {d.get('发布名称','?'):<12} {d.get('原始名称','?'):<32} {d.get('驱动程序版本','?')}")
                 flat.append(d)
                 idx += 1
         if not flat:
@@ -1946,7 +2048,7 @@ def driver_manager():
             return
     else:
         # 无效输入: 绝不允许落到"默认删除"（破坏性操作的兜底分支必须是取消）
-        print(f"  {C.AMBER}输入无效: 请选择 a=全部删除 / 1=仅无风险 / v=逐项选择 / q=取消{C.RESET}")
+        print(f"  {C.AMBER}输入无效: 请选择 a=全部 / 1=A区无风险 / 2=A区低风险 / 3=B区安全 / 4=B区注意 / v=逐项 / q=取消{C.RESET}")
         return
 
     print(f"\n  即将删除 {len(to_delete)} 个旧版本驱动包:")
@@ -1972,9 +2074,16 @@ def driver_manager():
             print(f"{C.GREEN}OK{C.RESET}")
             log_delete(pub + " (驱动)", 0, "驱动管理")
         else:
-            print(f"{C.RED}失败{C.RESET}")
-            if out:
-                print(f"    {out}")
+            # 区分"在用保护性拒绝"与其他错误（如打印队列等软设备引用）
+            in_use_err = any(k in out.lower() for k in
+                             ["presently installed", "in use", "正在使用"])
+            if in_use_err:
+                print(f"{C.AMBER}跳过（被系统/软设备引用，属正常保护，可保留）{C.RESET}")
+                log_skip(pub + " (驱动)", "驱动管理")
+            else:
+                print(f"{C.RED}失败{C.RESET}")
+                if out:
+                    print(f"    {out}")
     print("  驱动清理完成。")
     input("  按回车返回...")
 
