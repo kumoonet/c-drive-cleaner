@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-C盘清理工具 v2.6
+C盘清理工具 v3.0
 学习BleachBit CleanerML体系（12个XML源码验证）+ WinApp2规则库（4067条CCleaner规则）+ Dism++（pnputil/AppX命令体系）：
   - 浏览器多Profile支持（Default + Profile *）
   - Chrome/Edge AI端侧模型清理 + 根级增量（WasmTtsEngine/DRM/SafeBrowsing）
@@ -13,7 +13,7 @@ C盘清理工具 v2.6
   - 驱动管理（pnputil旧版本驱动识别与删除，Dism++学习）
   - AppX管理（预装UWP列出与卸载，Dism++学习）
   - 清理前自动创建还原点（驱动/AppX操作前置）
-功能：垃圾清理 | 隐私痕迹 | Deep Scan | 系统瘦身 | 大文件猎手 | 无效快捷方式 | 驱动管理 | AppX管理
+功能：垃圾清理 | 隐私痕迹 | Deep Scan | 系统瘦身 | 大文件猎手 | 无效快捷方式 | 驱动管理 | AppX管理 | 官方清理
 双击运行或命令行执行: python c_drive_cleaner.py
 """
 
@@ -30,10 +30,14 @@ import collections
 from pathlib import Path
 from datetime import datetime, timedelta
 
-VERSION = "2.6"
+VERSION = "3.0"
 
 # 更新日志（内观：版本透明，运行时可见）
 APP_CHANGELOG = [
+    {"ver": "3.0", "date": "2026-08-13", "note": "旧系统与低配机适配（Windows 7 SP1+/32位/低内存即开即用）：①启动器检测链重构——按系统自动选 Python：Win7(6.1)以下→3.9.13（最后支持Win7的版本），其余→3.12.10；32位系统→win32 包（PROCESSOR_ARCHITECTURE 检测）；②下载降级链 curl→PowerShell WebClient(TLS1.2强制)→http明文兜底（Win7 无 TLS1.2 补丁时，华为云实测支持）；③解压降级链 tar.exe→VBS Shell.Application CopyHere（Win7 无 tar，WSH 内置，轮询等待+退出码校验）；④低配自动降并发：CPU<5核时启动器设 CDRIVE_CLEANER_THREADS=4，工具读环境变量（_scan_threads，范围1-16）；⑤实测验证：3.9.13 amd64/win32 双架构 38 分类正常、ctypes/subprocess 可用、py_compile 通过（无 3.10+ 语法）"},
+    {"ver": "2.9", "date": "2026-08-13", "note": "便携运行时自动部署（无Python环境即开即用）：启动器检测链新增第4段 runtime\\python（工具目录自带运行时，整目录拷走即用）；第5段无 Python/uv 时自动下载官方 embeddable 包（~11MB，华为云→npmmirror→python.org 三镜像容错，大陆直连实测华为云 2.15MB/s）解压到 runtime\\ 后调用；解压用系统自带 tar.exe（Expand-Archive 实测 10 分钟卡死弃用）；下载后大小校验（<5MB 判异常）；embeddable 标准库与工具全兼容（实测导入 38 分类正常）"},
+    {"ver": "2.8", "date": "2026-08-13", "note": "v2.9规划并入+遗留补完：①分类统计新增「较上次复涨最快Top5」（run_history 保留最近5次，仅对比两次都清理过的分类，防勾选集合不同导致首次统计失真）；②回收站扫描枚举全部固定盘（GetLogicalDrives 替代硬编码 C/D/E）；③启动器 C盘清理_fix.bat 重写（GBK+CRLF，版本号 v2.4→v2.8，修复 >nul 被 MSYS 转成 /dev/null 的泄漏）；④P1-1缓存增量经评估取消：并发扫描已 1.8s/38分类，增量缓存需持久化全文件清单且有过期风险，ROI 为负"},
+    {"ver": "2.7", "date": "2026-08-13", "note": "审计迭代（多元搜索验证）：①扫描改8线程并发（ThreadPoolExecutor，38分类并行）；②新增「休眠与页面文件」分类（powercfg /h off 关闭休眠释放 hiberfil.sys，pagefile 仅展示）与「WSL2虚拟磁盘」分类（ext4.vhdx 检测+压缩流程引导）；③大文件猎手升级目录级分析（目录Top20+文件Top20，min_size三档可调，一级子目录并行遍历）；④新增官方磁盘清理入口（cleanmgr/存储感知，与工具互补）；⑤谨慎级操作统一前置还原点（Windows.old/DISM ResetBase/事件日志/休眠）；⑥事件日志清理保留 Security 日志（取证合规）；⑦还原点管理新增存储上限设置（vssadmin resize，治本替代只删最旧）；⑧dry-run 高危分类路径明细预览；⑨清理统计新增分类级累计排行；⑩wuauserv/DoSvc 停启 try/finally 化（防中途退出留服务停止态）"},
     {"ver": "2.6", "date": "2026-08-08", "note": "驱动管理新增孤立驱动包检测并分安全等级：B区 [3]安全孤立包（外设/串口/打印机残留，放心删）+ [4]注意孤立包（Intel/联想/Realtek 等核心硬件，可能未来回插需重装），删除后 Windows Update 可重新获取；排除打印机类驱动（软设备由打印服务引用，不在PnP设备树，删除必失败）+ 删除失败区分在用保护与软设备引用 + 清理后显示本次/累计清理量（持久化统计，%LOCALAPPDATA%/CDriveCleaner/cleanup_stats.json）"},
     {"ver": "2.5", "date": "2026-08-08", "note": "浏览器缓存拆分细粒度：原「浏览器缓存（基础）」「浏览器深度清理」拆为8个独立分类（网页/渲染/组件崩溃/根级数据/站点数据/ServiceWorker配额/Firefox缓存/Firefox深度），各自标注风险（安全/注意），可按需单独勾选清理，避免误清登录态；id 4-11 为浏览器细分类，原 6-30 顺延为 12-36；扫描分类数改为动态计算"},
     {"ver": "2.4", "date": "2026-08-07", "note": "新增驱动管理（pnputil旧版本识别/删除，按类GUID风险分档：无风险/低风险一键删，在用驱动自动过滤） + AppX管理（预装UWP卸载，黑名单保护） + 清理前自动建还原点 + 主菜单改为循环（q退出）+ 修复pnputil双语输出解析（chcp 65001下英文输出）+ 修复无效快捷方式误判（IShellLink COM替代二进制解析）+ 修复驱动管理无效输入误触删除 + 驱动管理[2]仅低风险独立选项 + 运行时可见更新日志（[c]查看全部）"},
@@ -190,8 +194,10 @@ def _load_stats():
                 "first_run": None, "last_run": None}
 
 
-def log_summary(total_freed, total_skipped):
-    """写入清理汇总 + 累计统计（本次清理 X · 累计清理 Y）"""
+def log_summary(total_freed, total_skipped, per_cat=None):
+    """写入清理汇总 + 累计统计（本次清理 X · 累计清理 Y · 分类累计排行 · 较上次复涨排行）
+    per_cat: {分类名: 释放字节}，可选，用于分类级累计排行与复涨对比（P2-9）
+    """
     global _LOG_FILE
     stats = _load_stats()
     stats["total_freed"] = stats.get("total_freed", 0) + total_freed
@@ -201,6 +207,14 @@ def log_summary(total_freed, total_skipped):
         stats["first_run"] = now
     stats["last_run"] = now
     stats["last_freed"] = total_freed
+    if per_cat:
+        stats.setdefault("by_category", {})
+        for name, sz in per_cat.items():
+            stats["by_category"][name] = stats["by_category"].get(name, 0) + sz
+    # 运行历史（保留最近5次，供"较上次复涨最快"对比）
+    stats.setdefault("run_history", [])
+    stats["run_history"].append({"ts": now, "by_category": per_cat or {}})
+    stats["run_history"] = stats["run_history"][-5:]
     try:
         with open(_stats_file_path(), "w", encoding="utf-8") as f:
             json.dump(stats, f, ensure_ascii=False, indent=1)
@@ -212,6 +226,22 @@ def log_summary(total_freed, total_skipped):
           + (f"  {C.DIM}| 跳过 {total_skipped}{C.RESET}" if total_skipped else ""))
     print(f"  {C.DIM}累计清理:{C.RESET} {C.GREEN}{format_size(stats['total_freed'])}{C.RESET}"
           f"  {C.DIM}（共 {stats['total_runs']} 次，起始 {str(stats.get('first_run', '?'))[:10]}）{C.RESET}")
+    bc = stats.get("by_category") or {}
+    if bc:
+        top = sorted(bc.items(), key=lambda kv: kv[1], reverse=True)[:5]
+        top_str = "  ".join(f"{C.WHITE}{n}{C.RESET}={format_size(s)}" for n, s in top)
+        print(f"  {C.DIM}分类累计排行: {C.RESET}{top_str}")
+    # 较上次复涨最快：仅对比两次都清理过的分类（防勾选集合不同导致首次统计失真）
+    rh = stats.get("run_history") or []
+    if len(rh) >= 2 and per_cat:
+        prev = rh[-2].get("by_category", {})
+        growth = {n: per_cat[n] - prev.get(n, 0)
+                  for n in (set(per_cat) & set(prev))
+                  if per_cat[n] - prev.get(n, 0) > 0}
+        if growth:
+            gtop = sorted(growth.items(), key=lambda kv: kv[1], reverse=True)[:5]
+            g_str = "  ".join(f"{C.WHITE}{n}{C.RESET}=+{format_size(s)}" for n, s in gtop)
+            print(f"  {C.DIM}较上次复涨最快: {C.RESET}{g_str}")
 
     if not _LOG_FILE:
         return
@@ -227,6 +257,15 @@ def log_summary(total_freed, total_skipped):
 
 # 当前正在清理的分类名（供_delete_file/_delete_path引用）
 _CURRENT_CATEGORY = ""
+
+
+def _scan_threads():
+    """并发扫描线程数：默认8，低配机经启动器（CDRIVE_CLEANER_THREADS）降为4"""
+    try:
+        n = int(os.environ.get("CDRIVE_CLEANER_THREADS", "8"))
+        return max(1, min(16, n))
+    except ValueError:
+        return 8
 
 
 # ============================================================
@@ -352,12 +391,13 @@ def build_categories():
                 # Quark
                 os.path.join(local, "Quark", "User Data", "component_crx_cache"),
                 os.path.join(local, "Quark", "User Data", "extensions_crx_cache"),
+                os.path.join(local, "Quark", "User Data", "Crash Reports"),  # 不存在时 scan/clean 自动跳过
             ],
         },
         {
             "id": 7,
             "name": "浏览器-根级数据",
-            "desc": "Chrome/Edge 根级增量（语音模型/DRM/安全浏览，删除后自动重建）",
+            "desc": "Chrome/Edge 根级增量（语音模型/DRM/安全浏览/断字数据/密码强度检测，删除后自动重建）",
             "risk": "安全",
             "paths": [
                 # WasmTtsEngine 语音合成模型（WinApp2实测21.9MB，删除后自动重下）
@@ -549,7 +589,7 @@ def build_categories():
         {
             "id": 21,
             "name": "Electron应用缓存",
-            "desc": "VSCode(+Cursor/Windsurf)/Chatbox/Discord/Slack/Zoom等",
+            "desc": "VSCode(+Cursor/Windsurf)/Chatbox/Discord/Slack/Zoom等Electron缓存+TeamViewer截图+PixPin缓存",
             "risk": "安全",
             "paths": [
                 # === VSCode（对照BleachBit vscode.xml: cache+backup+logs选项）===
@@ -691,7 +731,7 @@ def build_categories():
         {
             "id": 28,
             "name": "系统还原点（旧）",
-            "desc": "删除最旧还原点，保留最近的",
+            "desc": "删除最旧还原点 / 设置存储上限（vssadmin resize）",
             "risk": "注意",
             "paths": [],
             "special": "restore_points",
@@ -843,6 +883,22 @@ def build_categories():
                 r"C:\ProgramData\Avast Software\Cleanup\log",
             ],
         },
+        {
+            "id": 37,
+            "name": "休眠与页面文件",
+            "desc": "hiberfil.sys 关闭休眠可释放（≈物理内存大小）；pagefile/swapfile 仅展示建议迁移",
+            "risk": "谨慎",
+            "paths": [],
+            "special": "hibernation",
+        },
+        {
+            "id": 38,
+            "name": "WSL2虚拟磁盘",
+            "desc": "WSL2/Docker 的 ext4.vhdx（只增不减，删除文件不回收空间），引导压缩流程",
+            "risk": "注意",
+            "paths": [],
+            "special": "wsl2_vhdx",
+        },
     ]
     return categories
 
@@ -965,6 +1021,10 @@ def scan_category(cat):
     if special == "restore_points":
         size, count = scan_restore_points()
         return size, count, ["系统还原点"]
+    if special == "hibernation":
+        return scan_hibernation()
+    if special == "wsl2_vhdx":
+        return scan_wsl2_vhdx()
     if special == "clipboard_history":
         return 0, 1, ["剪贴板"]
     if special == "event_logs":
@@ -986,9 +1046,6 @@ def scan_category(cat):
             total_size += get_file_size(p)
             file_count += 1
             continue
-
-        if firefox_cache and firefox_profiles and "Firefox" in str(firefox_profiles):
-            pass  # Firefox单独处理
 
         if exclude_patterns:
             # 排除子目录后统计
@@ -1096,20 +1153,32 @@ def scan_firefox_cache(profiles_dir):
     return total, count
 
 
+def _list_fixed_drives():
+    """枚举所有固定盘符（DRIVE_FIXED=3），替代硬编码 C/D/E（P3-10）"""
+    drives = []
+    try:
+        bitmask = ctypes.windll.kernel32.GetLogicalDrives()
+        for i in range(26):
+            if bitmask & (1 << i):
+                letter = chr(ord("A") + i)
+                if ctypes.windll.kernel32.GetDriveTypeW(letter + ":\\") == 3:
+                    drives.append(letter + ":")
+    except Exception:
+        drives = ["C:", "D:", "E:"]
+    return drives or ["C:"]
+
+
 def scan_recycle_bin():
     total = 0
     count = 0
-    try:
-        for drive in ["C", "D", "E"]:
-            rp = f"{drive}:\\$Recycle.Bin"
-            if os.path.exists(rp):
-                total += get_dir_size(rp)
-                try:
-                    count += sum(len(files) for _, _, files in os.walk(rp))
-                except:
-                    pass
-    except:
-        pass
+    for drive in _list_fixed_drives():
+        rp = f"{drive}\\$Recycle.Bin"
+        if os.path.exists(rp):
+            total += get_dir_size(rp)
+            try:
+                count += sum(len(files) for _, _, files in os.walk(rp))
+            except:
+                pass
     return total, count
 
 
@@ -1147,6 +1216,40 @@ def _parse_size_string(s):
     return 0
 
 
+def scan_hibernation():
+    """扫描休眠/页面文件（系统属性文件，只读大小；删除需走 powercfg，不直接删文件）"""
+    total = 0
+    count = 0
+    for f in (r"C:\hiberfil.sys", r"C:\pagefile.sys", r"C:\swapfile.sys"):
+        if os.path.exists(f):
+            try:
+                total += os.path.getsize(f)
+                count += 1
+            except (OSError, PermissionError):
+                pass
+    return total, count, ["hiberfil.sys/pagefile.sys/swapfile.sys"]
+
+
+def scan_wsl2_vhdx():
+    """扫描 WSL2 发行版虚拟磁盘（ext4.vhdx 只增不减，删除文件不回收空间）"""
+    total = 0
+    count = 0
+    pkgs = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Packages")
+    if os.path.isdir(pkgs):
+        try:
+            for d in os.listdir(pkgs):
+                vhdx = os.path.join(pkgs, d, "LocalState", "ext4.vhdx")
+                if os.path.isfile(vhdx):
+                    try:
+                        total += os.path.getsize(vhdx)
+                        count += 1
+                    except (OSError, PermissionError):
+                        pass
+        except (OSError, PermissionError):
+            pass
+    return total, count, ["%LOCALAPPDATA%\\Packages\\*\\LocalState\\ext4.vhdx"]
+
+
 # ============================================================
 # 清理函数
 # ============================================================
@@ -1163,6 +1266,10 @@ def clean_category(cat):
         return clean_recycle_bin()
     if special == "restore_points":
         return clean_restore_points()
+    if special == "hibernation":
+        return clean_hibernation()
+    if special == "wsl2_vhdx":
+        return clean_wsl2_vhdx()
     if special == "clipboard_history":
         return clean_clipboard_history()
     if special == "event_logs":
@@ -1354,16 +1461,43 @@ def clean_recycle_bin():
 
 
 def clean_restore_points():
+    """系统还原点管理：删最旧 或 设置存储上限（P2-8，治本替代只删最旧）"""
     if not is_admin():
         return 0, 1
-    try:
-        subprocess.run(
-            ["vssadmin", "delete", "shadows", "/for=C:", "/oldest", "/quiet"],
-            capture_output=True, timeout=30
-        )
+    print()
+    print("  [1] 删除最旧还原点（释放空间）")
+    print("  [2] 设置还原点存储上限（治本：默认上限可达卷的10%，改小即永久约束）")
+    print("  [q] 取消")
+    choice = input("  > ").strip().lower()
+    if choice == "1":
+        try:
+            subprocess.run(
+                ["vssadmin", "delete", "shadows", "/for=C:", "/oldest", "/quiet"],
+                capture_output=True, timeout=30
+            )
+            return 0, 0
+        except:
+            return 0, 1
+    elif choice == "2":
+        maxmb = input("  上限大小(MB)，如 5120 = 5GB，直接回车跳过: ").strip()
+        if not maxmb.isdigit():
+            return 0, 1
+        try:
+            r = subprocess.run(
+                ["vssadmin", "resize", "shadowstorage", "/for=C:", "/on=C:",
+                 f"/maxsize={maxmb}MB"],
+                capture_output=True, timeout=30)
+            if r.returncode == 0:
+                print(f"  {C.GREEN}✓ 还原点存储上限已设为 {maxmb}MB{C.RESET}")
+            else:
+                out = _decode_subprocess(r.stdout) or _decode_subprocess(r.stderr)
+                print(f"  {C.AMBER}设置失败（vssadmin 输出）:{C.RESET}")
+                if out:
+                    print(f"    {out.strip()}")
+        except Exception:
+            pass
         return 0, 0
-    except:
-        return 0, 1
+    return 0, 1
 
 
 
@@ -1384,23 +1518,60 @@ def clean_clipboard_history():
 
 
 def clean_event_logs():
-    """清理Windows事件日志（需管理员）"""
+    """清理Windows事件日志（需管理员）
+    v2.7: 保留 Security 日志（安全审计轨迹，取证/合规场景不建议清除）
+    """
     if not is_admin():
         return 0, 1
     try:
+        # PowerShell 侧过滤 Security 日志，其余逐个清除
         subprocess.run(
-            ["wevtutil", "el"],
-            capture_output=True, text=True, timeout=10
-        )
-        # 获取所有日志名并逐个清除
-        result = subprocess.run(
-            ["powershell", "-Command",
-             "wevtutil el | ForEach-Object { wevtutil cl $_ 2>$null }"],
+            ["powershell", "-NoProfile", "-Command",
+             "wevtutil el | Where-Object { $_ -ne 'Security' } "
+             "| ForEach-Object { wevtutil cl $_ 2>$null }"],
             capture_output=True, timeout=60
         )
         return 0, 0
     except:
         return 0, 1
+
+
+def clean_hibernation():
+    """关闭休眠释放 hiberfil.sys（不直接删文件，官方路径=powercfg /h off）"""
+    if not is_admin():
+        return 0, 1
+    print(f"  {C.AMBER}执行 powercfg /h off: 关闭休眠+快速启动，系统自动删除 hiberfil.sys"
+          f"（不可逆；重新开启请执行 powercfg /h on）{C.RESET}")
+    if input("  确认？(y/n): ").strip().lower() != "y":
+        return 0, 1
+    try:
+        r = subprocess.run(["powercfg", "/h", "off"], capture_output=True, timeout=60)
+        if r.returncode == 0:
+            size = 0
+            if os.path.exists(r"C:\hiberfil.sys"):
+                try:
+                    size = os.path.getsize(r"C:\hiberfil.sys")
+                except (OSError, PermissionError):
+                    pass
+            log_delete("C:\\hiberfil.sys (休眠文件)", size, "休眠与页面文件")
+            return size, 0
+    except Exception:
+        pass
+    return 0, 1
+
+
+def clean_wsl2_vhdx():
+    """WSL2 vhdx 压缩引导：只打印流程，不自动执行（涉及发行版停机，须用户手动操作）"""
+    print(f"  {C.AMBER}WSL2 vhdx 压缩流程（不自动执行，请在终端按序操作）:{C.RESET}")
+    print("    1. wsl --shutdown")
+    print("    2. diskpart")
+    print("       select vdisk file=\"<上表路径>\\ext4.vhdx\"")
+    print("       attach vdisk readonly")
+    print("       compact vdisk")
+    print("       detach vdisk")
+    print(f"    3. 重新启动 wsl（空间立即回收）")
+    print(f"  {C.DIM}提示: 压缩前建议先 wsl --manage <发行版> --set-sparse true（新发行版已默认）{C.RESET}")
+    return 0, 0
 
 
 # ============================================================
@@ -1569,6 +1740,7 @@ def system_slim():
     print()
     choice2 = input("  重置基线？(更彻底，不可回退)(y/n): ").strip().lower()
     if choice2 == "y":
+        ensure_restore_point([{"name": "DISM ResetBase"}], "C盘清理工具DISM ResetBase")
         print("  正在重置...")
         try:
             subprocess.run(
@@ -1584,56 +1756,111 @@ def system_slim():
 # 大文件猎手
 # ============================================================
 
-def big_file_hunter(min_size_mb=100):
-    print()
-    print("-" * 60)
-    print(f"  大文件猎手（>{min_size_mb}MB）")
-    print("-" * 60)
-    print()
-    print("  正在扫描...")
+def big_file_hunter(min_size_mb=None):
+    """大文件猎手：目录级分析（目录Top20 + 文件Top20，只展示不删除）
+    min_size_mb: 传入则跳过交互询问（便于脚本化/测试）
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    if min_size_mb is None:
+        print()
+        print("-" * 60)
+        print("  大文件猎手（目录级分析，仅展示不删除）")
+        print("-" * 60)
+        print()
+        print("  最小文件大小档位: [1]=50MB  [2]=100MB  [3]=500MB")
+        choice = input("  > ").strip()
+        min_size_mb = {"1": 50, "3": 500}.get(choice, 100)
+    print(f"  {C.DIM}正在扫描（文件>={min_size_mb}MB，目录聚合）...{C.RESET}")
 
     min_bytes = min_size_mb * 1024 * 1024
-    big_files = []
     user_dir = os.environ.get("USERPROFILE", r"C:\Users\Default")
-    scan_dirs = [user_dir]
+    scan_roots = [(user_dir, True)]
     if is_admin():
-        scan_dirs.append(r"C:\Windows\Installer")
-        scan_dirs.append(r"C:\Windows\Logs")
+        scan_roots += [(r"C:\Windows\Installer", False), (r"C:\Windows\Logs", False)]
 
     skip_dirs = {"$Recycle.Bin", "System Volume Information", "node_modules"}
 
-    for scan_dir in scan_dirs:
-        if not os.path.exists(scan_dir):
-            continue
+    all_files = []   # (path, size)
+    dir_sizes = {}   # key -> [size, count]
+
+    def walk_worker(root, is_user):
+        """单根目录遍历：收集大文件 + 目录大小聚合（线程内独立，返回合并）"""
+        files, dirs = [], {}
         try:
-            for dirpath, dirnames, filenames in os.walk(scan_dir):
+            for dirpath, dirnames, filenames in os.walk(root):
                 dirnames[:] = [d for d in dirnames if d not in skip_dirs]
+                if is_user:
+                    rel = os.path.relpath(dirpath, user_dir)
+                    key = rel.split(os.sep)[0] if rel not in (".", "") else "(根目录)"
+                else:
+                    key = os.path.basename(root) or root
+                d_size, d_count = 0, 0
                 for f in filenames:
                     fp = os.path.join(dirpath, f)
                     try:
-                        size = os.path.getsize(fp)
-                        if size >= min_bytes:
-                            big_files.append((fp, size))
+                        s = os.path.getsize(fp)
                     except (OSError, PermissionError):
-                        pass
+                        continue
+                    d_size += s
+                    d_count += 1
+                    if s >= min_bytes:
+                        files.append((fp, s))
+                if d_size:
+                    e = dirs.get(key)
+                    if e:
+                        e[0] += d_size
+                        e[1] += d_count
+                    else:
+                        dirs[key] = [d_size, d_count]
         except (OSError, PermissionError):
             pass
+        return files, dirs
 
-    if not big_files:
+    with ThreadPoolExecutor(max_workers=_scan_threads()) as ex:
+        futs = [ex.submit(walk_worker, root, is_user)
+                for root, is_user in scan_roots if os.path.exists(root)]
+        for fut in as_completed(futs):
+            try:
+                fl, dr = fut.result()
+            except Exception:
+                continue
+            all_files.extend(fl)
+            for k, v in dr.items():
+                e = dir_sizes.get(k)
+                if e:
+                    e[0] += v[0]
+                    e[1] += v[1]
+                else:
+                    dir_sizes[k] = v
+
+    all_files.sort(key=lambda x: x[1], reverse=True)
+    dir_rank = sorted(dir_sizes.items(), key=lambda kv: kv[1][0], reverse=True)
+
+    if not all_files and not dir_rank:
         print(f"  未找到超过 {min_size_mb}MB 的文件。")
         return
 
-    big_files.sort(key=lambda x: x[1], reverse=True)
-    print(f"\n  找到 {len(big_files)} 个大文件:\n")
-    print(f"  {'大小':<12} {'路径'}")
-    print(f"  {'----':<12} {'----'}")
+    print(f"\n  {'目录占用 Top 20':<22} {'大小':<12} {'文件数'}")
+    print(f"  {'─'*22:<22} {'─'*12}  {'─'*6}")
+    for name, (sz, cnt) in dir_rank[:20]:
+        print(f"  {name:<22} {format_size(sz):<12} {cnt}")
+    if len(dir_rank) > 20:
+        print(f"  ... 共 {len(dir_rank)} 个目录")
 
-    for fp, size in big_files[:30]:
-        display = fp if len(fp) <= 70 else "..." + fp[-67:]
-        print(f"  {format_size(size):<12} {display}")
+    if all_files:
+        print(f"\n  大文件 Top 20（>={min_size_mb}MB，共 {len(all_files)} 个）:")
+        print(f"  {'大小':<12} {'路径'}")
+        for fp, sz in all_files[:20]:
+            display = fp if len(fp) <= 66 else "..." + fp[-63:]
+            print(f"  {format_size(sz):<12} {display}")
+    else:
+        print(f"\n  未发现 >={min_size_mb}MB 的大文件。")
 
-    total = sum(s for _, s in big_files)
-    print(f"\n  合计: {format_size(total)}（仅展示，不自动删除）")
+    dir_total = sum(v[0] for _, v in dir_rank[:20])
+    file_total = sum(s for _, s in all_files)
+    print(f"\n  目录Top20合计: {format_size(dir_total)}  |  大文件合计: {format_size(file_total)}")
+    print(f"  {C.DIM}（仅展示，不自动删除；目录合计与文件合计有重叠，勿相加）{C.RESET}")
 
 
 # ============================================================
@@ -1720,8 +1947,8 @@ def get_shortcut_target(lnk_path):
         ole32 = ctypes.windll.ole32
         ole32.CoInitialize(None)
         pshell = ctypes.c_void_p()
-        hr = ole32.CoCreateInstance(byref(_CLSID_ShellLink), None, 1,
-                                    byref(_IID_IShellLinkW), byref(pshell))
+        hr = ole32.CoCreateInstance(ctypes.byref(_CLSID_ShellLink), None, 1,
+                                    ctypes.byref(_IID_IShellLinkW), ctypes.byref(pshell))
         if hr != 0 or not pshell.value:
             return None
         try:
@@ -1730,7 +1957,7 @@ def get_shortcut_target(lnk_path):
             ppf = ctypes.c_void_p()
             qa = ctypes.WINFUNCTYPE(ctypes.HRESULT, ctypes.c_void_p,
                                     ctypes.POINTER(_GUID), ctypes.POINTER(ctypes.c_void_p))(vtbl[0])
-            hr = qa(pshell, byref(_IID_IPersistFile), byref(ppf))
+            hr = qa(pshell, ctypes.byref(_IID_IPersistFile), ctypes.byref(ppf))
             if hr != 0 or not ppf.value:
                 return None
             # IPersistFile::Load(路径, STGM_READ=0)
@@ -1770,6 +1997,20 @@ def create_restore_point(desc):
         return r.returncode == 0
     except Exception:
         return False
+
+
+def ensure_restore_point(risky_cats, label):
+    """谨慎级操作统一前置还原点（P2-6）
+    risky_cats: 风险=谨慎的分类列表（为空则跳过）；label: 还原点描述
+    """
+    if not risky_cats:
+        return
+    if not is_admin():
+        return
+    if create_restore_point(label):
+        print(f"  {C.GREEN}✓ 系统还原点已创建（谨慎级操作 {len(risky_cats)} 项）{C.RESET}")
+    else:
+        print(f"  {C.AMBER}⚠ 还原点创建失败（系统保护可能未开启），继续前请确认风险{C.RESET}")
 
 
 def parse_pnputil_output(raw):
@@ -2213,6 +2454,25 @@ def appx_manager():
     input("  按回车返回...")
 
 
+def official_cleanup():
+    """官方磁盘清理入口（与工具互补：清工具未覆盖的官方类别，如组件存储冗余/系统错误转储）"""
+    print()
+    print("-" * 60)
+    print("  官方磁盘清理（微软工具，与本工具互补）")
+    print("-" * 60)
+    print()
+    print("  [1] cleanmgr /lowdisk — 官方磁盘清理UI（自动勾选安全项）")
+    print("  [2] 打开存储感知设置页（可配置自动清理计划与清理建议）")
+    print("  [q] 返回")
+    choice = input("  > ").strip().lower()
+    if choice == "1":
+        subprocess.Popen(["cleanmgr", "/lowdisk"])
+        print("  已启动 cleanmgr（官方磁盘清理窗口）。")
+    elif choice == "2":
+        os.system("start ms-settings:storagesense >nul 2>&1")
+        print("  已打开存储感知设置页。")
+
+
 # ============================================================
 # 主流程
 # ============================================================
@@ -2276,7 +2536,7 @@ def main():
         print_disk_info()
 
         print(f"  {C.GRAY}┌{'─' * 58}┐{C.RESET}")
-        print(f"  {C.GRAY}│{C.RESET}  {C.CYAN}[1]{C.RESET} 垃圾清理    {C.DIM}30类缓存/临时/日志/AI模型/应用专属{C.RESET}  {C.GRAY}│{C.RESET}")
+        print(f"  {C.GRAY}│{C.RESET}  {C.CYAN}[1]{C.RESET} 垃圾清理    {C.DIM}38类缓存/临时/日志/AI模型/应用专属{C.RESET}  {C.GRAY}│{C.RESET}")
         print(f"  {C.GRAY}│{C.RESET}  {C.CYAN}[2]{C.RESET} 隐私痕迹    {C.DIM}最近文档/JumpList/剪贴板/事件日志{C.RESET}    {C.GRAY}│{C.RESET}")
         print(f"  {C.GRAY}│{C.RESET}  {C.CYAN}[3]{C.RESET} Deep Scan   {C.DIM}全盘精确正则搜索垃圾文件{C.RESET}          {C.GRAY}│{C.RESET}")
         print(f"  {C.GRAY}│{C.RESET}  {C.CYAN}[4]{C.RESET} 系统瘦身    {C.DIM}DISM WinSxS组件清理{C.RESET}              {C.GRAY}│{C.RESET}")
@@ -2284,8 +2544,9 @@ def main():
         print(f"  {C.GRAY}│{C.RESET}  {C.CYAN}[6]{C.RESET} 无效快捷方式{C.DIM}桌面/开始菜单死链{C.RESET}              {C.GRAY}│{C.RESET}")
         print(f"  {C.GRAY}│{C.RESET}  {C.CYAN}[7]{C.RESET} 驱动管理    {C.DIM}pnputil旧版本驱动识别/删除{C.RESET}          {C.GRAY}│{C.RESET}")
         print(f"  {C.GRAY}│{C.RESET}  {C.CYAN}[8]{C.RESET} AppX管理    {C.DIM}预装UWP列出/卸载（黑名单保护）{C.RESET}      {C.GRAY}│{C.RESET}")
+        print(f"  {C.GRAY}│{C.RESET}  {C.CYAN}[9]{C.RESET} 官方磁盘清理{C.DIM}cleanmgr/存储感知（微软官方）{C.RESET}          {C.GRAY}│{C.RESET}")
         print(f"  {C.GRAY}│{C.RESET}  {C.DIM}──────────────────────────────────────────────────{C.RESET}  {C.GRAY}│{C.RESET}")
-        print(f"  {C.GRAY}│{C.RESET}  {C.WHITE}[a]{C.RESET} 全部执行    {C.DIM}1+2+3+4+5+6{C.RESET}                    {C.GRAY}│{C.RESET}")
+        print(f"  {C.GRAY}│{C.RESET}  {C.WHITE}[a]{C.RESET} 全部执行    {C.DIM}1-6（驱动/AppX/官方清理需单独执行）{C.RESET}  {C.GRAY}│{C.RESET}")
         print(f"  {C.GRAY}│{C.RESET}  {C.WHITE}[c]{C.RESET} 更新日志    {C.DIM}查看版本历史{C.RESET}                    {C.GRAY}│{C.RESET}")
         print(f"  {C.GRAY}│{C.RESET}  {C.DIM}[q]{C.RESET} 退出                                          {C.GRAY}│{C.RESET}")
         print(f"  {C.GRAY}└{'─' * 58}┘{C.RESET}")
@@ -2311,6 +2572,8 @@ def main():
             driver_manager()
         elif mode == "8":
             appx_manager()
+        elif mode == "9":
+            official_cleanup()
         elif mode == "c":
             show_changelog()
         elif mode == "a":
@@ -2321,7 +2584,7 @@ def main():
             big_file_hunter()
             scan_dead_shortcuts()
         else:
-            run_cleanup()
+            print(f"  {C.DIM}无效输入，请重新选择。{C.RESET}")
         # 功能执行完毕，回到循环顶部重新显示主菜单
 
 
@@ -2330,17 +2593,24 @@ def run_cleanup():
     log_init()
     categories = build_categories()
 
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     print()
-    print(f"  {C.DIM}正在扫描 {len(categories)} 个分类...{C.RESET}")
+    print(f"  {C.DIM}正在并发扫描 {len(categories)} 个分类...{C.RESET}")
     print()
 
     results = []
-    total_cleanable = 0
-
-    for cat in categories:
-        size, count, paths = scan_category(cat)
-        results.append({"cat": cat, "size": size, "count": count, "paths": paths})
-        total_cleanable += size
+    with ThreadPoolExecutor(max_workers=_scan_threads()) as ex:
+        futures = {ex.submit(scan_category, cat): cat for cat in categories}
+        for fut in as_completed(futures):
+            cat = futures[fut]
+            try:
+                size, count, paths = fut.result()
+            except Exception:
+                size, count, paths = 0, 0, []
+            results.append({"cat": cat, "size": size, "count": count, "paths": paths})
+    results.sort(key=lambda r: r["cat"]["id"])
+    total_cleanable = sum(r["size"] for r in results)
 
     print(f"  {C.GRAY}{'#':<4} {_pad('分类', 28)} {'大小':<12} {'文件':<8} 风险{C.RESET}")
     print(f"  {C.GRAY}{'─'*4} {'─'*28} {'─'*12} {'─'*8} {'─'*6}{C.RESET}")
@@ -2389,31 +2659,49 @@ def run_cleanup():
     if input("\n  确认？(y/n): ").strip().lower() != "y":
         return
 
+    # dry-run 预览：注意/谨慎级分类展示路径明细（P2-5）
+    preview_cats = [r for r in selected if r["cat"]["risk"] in ("注意", "谨慎") and r["paths"]]
+    if preview_cats:
+        print(f"\n  {C.AMBER}高危分类明细预览（每类前 20 条路径）:{C.RESET}")
+        for r in preview_cats:
+            print(f"    [{r['cat']['name']}]")
+            for p in r["paths"][:20]:
+                print(f"      {p}")
+        if input(f"\n  高危分类 {len(preview_cats)} 个，确认清理？(y/n): ").strip().lower() != "y":
+            return
+
+    # 谨慎级操作统一前置还原点（P2-6）
+    ensure_restore_point([r["cat"] for r in selected if r["cat"]["risk"] == "谨慎"],
+                         "C盘清理工具谨慎级操作")
+
     # 执行清理
     print()
     wu_stopped = False
     selected_ids = [r["cat"]["id"] for r in selected]
-    if 3 in selected_ids and is_admin():
-        os.system("net stop wuauserv >nul 2>&1")
-        os.system("net stop DoSvc >nul 2>&1")
-        wu_stopped = True
+    per_cat = {}
+    try:
+        if 3 in selected_ids and is_admin():
+            os.system("net stop wuauserv >nul 2>&1")
+            os.system("net stop DoSvc >nul 2>&1")
+            wu_stopped = True
 
-    total_freed = 0
-    total_skipped = 0
+        total_freed = 0
+        total_skipped = 0
 
-    for r in selected:
-        cat = r["cat"]
-        freed, skipped = clean_category(cat)
-        total_freed += freed
-        total_skipped += skipped
-        status = "OK" if skipped == 0 else f"跳过{skipped}"
-        print(f"  [{cat['id']:>2}] {cat['name']:<24} {format_size(freed):<12} {status}")
+        for r in selected:
+            cat = r["cat"]
+            freed, skipped = clean_category(cat)
+            total_freed += freed
+            total_skipped += skipped
+            per_cat[cat["name"]] = per_cat.get(cat["name"], 0) + freed
+            status = "OK" if skipped == 0 else f"跳过{skipped}"
+            print(f"  [{cat['id']:>2}] {cat['name']:<24} {format_size(freed):<12} {status}")
+    finally:
+        if wu_stopped:
+            os.system("net start DoSvc >nul 2>&1")
+            os.system("net start wuauserv >nul 2>&1")
 
-    if wu_stopped:
-        os.system("net start DoSvc >nul 2>&1")
-        os.system("net start wuauserv >nul 2>&1")
-
-    log_summary(total_freed, total_skipped)
+    log_summary(total_freed, total_skipped, per_cat)
     print(f"\n  释放: {format_size(total_freed)}" +
           (f" | 跳过: {total_skipped}" if total_skipped else ""))
     if _LOG_FILE:
@@ -2469,17 +2757,23 @@ def run_privacy_cleanup():
     if input("\n  确认？(y/n): ").strip().lower() != "y":
         return
 
+    # 谨慎级操作统一前置还原点（P2-6：事件日志等）
+    ensure_restore_point([c for c in selected if c["risk"] == "谨慎"],
+                         "C盘清理工具隐私清理谨慎级操作")
+
     print()
     total_freed = 0
     total_skipped = 0
+    per_cat = {}
     for cat in selected:
         freed, skipped = clean_category(cat)
         total_freed += freed
         total_skipped += skipped
+        per_cat[cat["name"]] = per_cat.get(cat["name"], 0) + freed
         status = "OK" if skipped == 0 else "跳过"
         print(f"  [{cat['id']}] {cat['name']:<26} {status}")
 
-    log_summary(total_freed, total_skipped)
+    log_summary(total_freed, total_skipped, per_cat)
     print("\n  隐私痕迹清理完成。")
     if _LOG_FILE:
         print(f"  日志: {_LOG_FILE}")
